@@ -1,6 +1,65 @@
-name: helloworld # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
-display_name: helloworld # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
-desc: AstrBot 插件示例。 # 插件简短描述
-version: v1.3.0 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: Soulter # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+name: astrbot_plugin_MCPulse
+display_name: MCPulse
+desc: Minecraft server status monitoring plugin with notifications, statistics, and charts.
+version: v0.1.0
+author: User
+repo: https://github.com/user/astrbot_plugin_MCPulse
+
+config:
+  monitor:
+    type: object
+    properties:
+      interval:
+        type: number
+        default: 300
+        title: "监控间隔(秒)"
+        description: "定时检测服务器状态的间隔时间"
+      enabled:
+        type: boolean
+        default: true
+        title: "启用监控"
+      timeout:
+        type: number
+        default: 10
+        title: "查询超时(秒)"
+    title: "监控设置"
+
+  notification:
+    type: object
+    properties:
+      enabled:
+        type: boolean
+        default: true
+        title: "启用通知"
+      on_offline:
+        type: boolean
+        default: true
+        title: "离线告警"
+      on_recovery:
+        type: boolean
+        default: true
+        title: "恢复通知"
+      on_high_latency:
+        type: boolean
+        default: true
+        title: "高延迟告警"
+      latency_threshold:
+        type: number
+        default: 500
+        title: "延迟阈值(ms)"
+    title: "通知设置"
+
+  data_retention:
+    type: number
+    default: 30
+    title: "数据保留天数"
+    description: "监控数据保留天数，超过自动清理"
+
+  permissions:
+    type: object
+    properties:
+      admin_only:
+        type: boolean
+        default: false
+        title: "仅管理员可管理"
+    title: "权限设置"
