@@ -22,6 +22,7 @@ from core.models import ServerStatus, ServerInfo
 from storage.database import Database
 from notification.templates import TemplateManager
 from chart.generator import ChartGenerator
+from chart.renderer import render_server_status
 from utils.motd_parser import strip_motd_colors
 
 PLUGIN_DIR = Path(__file__).parent
@@ -44,15 +45,7 @@ class MCPulsePlugin(Star):
         self.template_manager = TemplateManager()
         self.chart_generator = ChartGenerator()
         self._monitor_task: Optional[asyncio.Task] = None
-        self._status_template = self._load_template("status_card.html")
-        self._status_css = self._load_template("status_card.css")
-
-    def _load_template(self, filename: str) -> str:
-        """Load a template file."""
-        template_path = PLUGIN_DIR / "templates" / filename
-        if template_path.exists():
-            return template_path.read_text(encoding="utf-8")
-        return ""
+        self._img_dir: Optional[Path] = None
 
     async def initialize(self):
         """Initialize the plugin."""
@@ -184,33 +177,17 @@ class MCPulsePlugin(Star):
         )
 
     async def _render_status_image(self, server: ServerInfo, status: ServerStatus) -> str:
-        """Render server status as an image using HTML template."""
-        favicon_data = None
-        if status.favicon:
-            import base64
-            favicon_data = f"data:image/png;base64,{base64.b64encode(status.favicon).decode()}"
+        """Render server status as PNG via Pillow and return file path."""
+        img_bytes = render_server_status(server, status)
 
-        template_data = {
-            "css": self._status_css,
-            "server_name": server.display_name,
-            "server_address": server.address,
-            "online": status.online,
-            "status_class": "online" if status.online else "offline",
-            "status_text": "在线" if status.online else "离线",
-            "favicon": favicon_data,
-            "players_online": f"{status.players_online:,}",
-            "players_max": f"{status.players_max:,}",
-            "latency": f"{status.latency:.0f}",
-            "version": status.version or "Unknown",
-            "protocol": status.protocol or "Unknown",
-            "motd": strip_motd_colors(status.motd) if status.motd else "",
-            "players": status.players_sample[:10] if status.players_sample else [],
-            "players_more": max(0, len(status.players_sample) - 10) if status.players_sample else 0,
-            "error": status.error or "",
-            "queried_at": status.queried_at.strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        # Save to a temp file in plugin data directory
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        data_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name
+        data_dir.mkdir(parents=True, exist_ok=True)
+        img_path = data_dir / f"status_{ts}.png"
+        img_path.write_bytes(img_bytes)
 
-        return await self.html_render(self._status_template, template_data)
+        return str(img_path)
 
     async def _get_default_server(self, event: AstrMessageEvent) -> Optional[ServerInfo]:
         """Get the default server for the current group/user."""
