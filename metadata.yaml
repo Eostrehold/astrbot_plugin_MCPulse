@@ -2,7 +2,7 @@ name: astrbot_plugin_MCPulse
 display_name: MCPulse
 desc: Minecraft server status monitoring plugin with notifications, statistics, and charts.
 version: v0.1.0
-author: User
+author: Eostrehold
 repo: https://github.com/user/astrbot_plugin_MCPulse
 
 config:
