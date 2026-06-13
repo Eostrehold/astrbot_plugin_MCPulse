@@ -4,7 +4,7 @@ import asyncio
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 # Add plugin directory to sys.path for local imports
 _plugin_dir = str(Path(__file__).parent)
@@ -24,6 +24,8 @@ from notification.templates import TemplateManager
 from chart.generator import ChartGenerator
 from utils.motd_parser import strip_motd_colors
 
+PLUGIN_DIR = Path(__file__).parent
+
 
 @register(
     "astrbot_plugin_MCPulse",
@@ -42,6 +44,15 @@ class MCPulsePlugin(Star):
         self.template_manager = TemplateManager()
         self.chart_generator = ChartGenerator()
         self._monitor_task: Optional[asyncio.Task] = None
+        self._status_template = self._load_template("status_card.html")
+        self._status_css = self._load_template("status_card.css")
+
+    def _load_template(self, filename: str) -> str:
+        """Load a template file."""
+        template_path = PLUGIN_DIR / "templates" / filename
+        if template_path.exists():
+            return template_path.read_text(encoding="utf-8")
+        return ""
 
     async def initialize(self):
         """Initialize the plugin."""
@@ -172,6 +183,53 @@ class MCPulsePlugin(Star):
             f"💡 MOTD: {motd}"
         )
 
+    async def _render_status_image(self, server: ServerInfo, status: ServerStatus) -> str:
+        """Render server status as an image using HTML template."""
+        favicon_data = None
+        if status.favicon:
+            import base64
+            favicon_data = f"data:image/png;base64,{base64.b64encode(status.favicon).decode()}"
+
+        template_data = {
+            "css": self._status_css,
+            "server_name": server.display_name,
+            "server_address": server.address,
+            "online": status.online,
+            "status_class": "online" if status.online else "offline",
+            "status_text": "在线" if status.online else "离线",
+            "favicon": favicon_data,
+            "players_online": f"{status.players_online:,}",
+            "players_max": f"{status.players_max:,}",
+            "latency": f"{status.latency:.0f}",
+            "version": status.version or "Unknown",
+            "protocol": status.protocol or "Unknown",
+            "motd": strip_motd_colors(status.motd) if status.motd else "",
+            "players": status.players_sample[:10] if status.players_sample else [],
+            "players_more": max(0, len(status.players_sample) - 10) if status.players_sample else 0,
+            "error": status.error or "",
+            "queried_at": status.queried_at.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        return await self.html_render(self._status_template, template_data)
+
+    async def _get_default_server(self, event: AstrMessageEvent) -> Optional[ServerInfo]:
+        """Get the default server for the current group/user."""
+        group_id = event.get_group_id() if hasattr(event, 'get_group_id') else None
+        user_id = event.get_sender_id()
+
+        if group_id:
+            key = f"default_server_group_{group_id}"
+            server_id = await self.get_kv_data(key, None)
+            if server_id:
+                return await self.db.get_server(server_id)
+
+        key = f"default_server_user_{user_id}"
+        server_id = await self.get_kv_data(key, None)
+        if server_id:
+            return await self.db.get_server(server_id)
+
+        return None
+
     async def _check_admin(self, event: AstrMessageEvent) -> bool:
         """Check if the user has admin permissions."""
         if not self.config.admin_only:
@@ -185,25 +243,68 @@ class MCPulsePlugin(Star):
 
     @filter.command("mcstatus")
     async def cmd_status(self, event: AstrMessageEvent):
-        """查询 Minecraft 服务器状态 / Query Minecraft server status"""
+        """查询 Minecraft 服务器状态"""
+        args = event.message_str.strip().split()
+
+        if len(args) < 2:
+            default_server = await self._get_default_server(event)
+            if default_server:
+                server = default_server
+            else:
+                yield event.plain_result(
+                    "用法: /mcstatus <服务器地址|名称>\n"
+                    "提示: 使用 /mcsetdefault <地址|名称> 设置默认服务器"
+                )
+                return
+        else:
+            target = args[1]
+            server = await self._find_server(target)
+            if not server:
+                host, port = self._parse_address(target)
+                status = await self.ping_service.query_server(host, port)
+                response = self._format_status(host, f"{host}:{port}", status)
+                yield event.plain_result(response)
+                return
+
+        status = await self.ping_service.query_server(server.host, server.port, server.server_type)
+
+        try:
+            image_url = await self._render_status_image(server, status)
+            yield event.image_result(image_url)
+        except Exception as e:
+            logger.error(f"Failed to render status image: {e}")
+            response = self._format_status(server.display_name, server.address, status)
+            yield event.plain_result(response)
+
+    @filter.command("mcsetdefault")
+    async def cmd_set_default(self, event: AstrMessageEvent):
+        """设置默认服务器"""
         args = event.message_str.strip().split()
         if len(args) < 2:
-            yield event.plain_result("用法: /mcstatus <服务器地址|名称>\n示例: /mcstatus mc.hypixel.net")
+            yield event.plain_result("用法: /mcsetdefault <服务器地址|名称>")
             return
+
         target = args[1]
         server = await self._find_server(target)
-        if server:
-            status = await self.ping_service.query_server(server.host, server.port, server.server_type)
-            response = self._format_status(server.display_name, server.address, status)
+        if not server:
+            yield event.plain_result(f"❌ 未找到服务器: {target}")
+            return
+
+        group_id = event.get_group_id() if hasattr(event, 'get_group_id') else None
+        user_id = event.get_sender_id()
+
+        if group_id:
+            key = f"default_server_group_{group_id}"
+            await self.put_kv_data(key, server.id)
+            yield event.plain_result(f"✅ 已设置本群默认服务器: {server.display_name}")
         else:
-            host, port = self._parse_address(target)
-            status = await self.ping_service.query_server(host, port)
-            response = self._format_status(host, f"{host}:{port}", status)
-        yield event.plain_result(response)
+            key = f"default_server_user_{user_id}"
+            await self.put_kv_data(key, server.id)
+            yield event.plain_result(f"✅ 已设置您的默认服务器: {server.display_name}")
 
     @filter.command("mcping")
     async def cmd_ping(self, event: AstrMessageEvent):
-        """一次性查询服务器状态 / One-time server status query"""
+        """一次性查询服务器状态"""
         args = event.message_str.strip().split()
         if len(args) < 2:
             yield event.plain_result("用法: /mcping <服务器地址:端口>\n示例: /mcping mc.hypixel.net:25565")
@@ -211,11 +312,23 @@ class MCPulsePlugin(Star):
         target = args[1]
         host, port = self._parse_address(target)
         status = await self.ping_service.query_server(host, port)
-        yield event.plain_result(self._format_status(host, f"{host}:{port}", status))
+
+        temp_server = ServerInfo(
+            id=0, host=host, port=port, server_type="auto",
+            name=host, group_name=None, enabled=True
+        )
+
+        try:
+            image_url = await self._render_status_image(temp_server, status)
+            yield event.image_result(image_url)
+        except Exception as e:
+            logger.error(f"Failed to render status image: {e}")
+            response = self._format_status(host, f"{host}:{port}", status)
+            yield event.plain_result(response)
 
     @filter.command("mcadd")
     async def cmd_add(self, event: AstrMessageEvent):
-        """添加服务器监控 / Add server to monitor"""
+        """添加服务器监控"""
         if not await self._check_admin(event):
             yield event.plain_result("❌ 权限不足: 仅管理员可执行此操作")
             return
@@ -232,14 +345,31 @@ class MCPulsePlugin(Star):
             yield event.plain_result(f"❌ 服务器已在监控列表中: {host}:{port}")
             return
         try:
-            await self.db.add_server(host=host, port=port, server_type="auto", name=name, group_name=group)
-            yield event.plain_result(f"✅ 已添加服务器监控\n地址: {host}:{port}\n备注: {name or '无'}\n分组: {group or '默认'}")
+            server_id = await self.db.add_server(host=host, port=port, server_type="auto", name=name, group_name=group)
+            status = await self.ping_service.query_server(host, port)
+            server = await self.db.get_server(server_id)
+            await self.db.add_ping_record(
+                server_id=server_id, online=status.online, latency=status.latency,
+                players_online=status.players_online, players_max=status.players_max,
+                version=status.version, error=status.error,
+            )
+
+            add_msg = f"✅ 已添加服务器监控\n地址: {host}:{port}\n备注: {name or '无'}\n分组: {group or '默认'}\n\n立即查询结果:"
+            try:
+                image_url = await self._render_status_image(server, status)
+                yield event.plain_result(add_msg)
+                yield event.image_result(image_url)
+            except Exception as e:
+                logger.error(f"Failed to render status image: {e}")
+                status_text = self._format_status(name or host, f"{host}:{port}", status)
+                yield event.plain_result(f"{add_msg}\n{status_text}")
+
         except Exception as e:
             yield event.plain_result(f"❌ 添加失败: {e}")
 
     @filter.command("mcdel")
     async def cmd_delete(self, event: AstrMessageEvent):
-        """删除服务器监控 / Delete server from monitor"""
+        """删除服务器监控"""
         if not await self._check_admin(event):
             yield event.plain_result("❌ 权限不足: 仅管理员可执行此操作")
             return
@@ -257,7 +387,7 @@ class MCPulsePlugin(Star):
 
     @filter.command("mclist")
     async def cmd_list(self, event: AstrMessageEvent):
-        """查看监控服务器列表 / List monitored servers"""
+        """查看监控服务器列表"""
         servers = await self.db.get_all_servers()
         if not servers:
             yield event.plain_result("📋 暂无监控服务器\n使用 /mcadd 添加服务器")
@@ -283,21 +413,32 @@ class MCPulsePlugin(Star):
             lines.append(f"{status_icon} {server.display_name} - {server.host}\n   分组: {server.group_name or '默认'} | {status_text}")
         lines.append("─────────────────────")
         lines.append(f"共 {len(servers)} 台服务器 | {online_count} 台在线 | {offline_count} 台离线")
+
+        default_server = await self._get_default_server(event)
+        if default_server:
+            lines.append(f"\n📌 当前默认服务器: {default_server.display_name}")
+
         yield event.plain_result("\n".join(lines))
 
     @filter.command("mcstats")
     async def cmd_stats(self, event: AstrMessageEvent):
-        """查看服务器统计信息 / View server statistics"""
+        """查看服务器统计信息"""
         args = event.message_str.strip().split()
+
         if len(args) < 2:
-            yield event.plain_result("用法: /mcstats <地址|名称> [天数]")
-            return
-        target = args[1]
+            server = await self._get_default_server(event)
+            if not server:
+                yield event.plain_result("用法: /mcstats <地址|名称> [天数]")
+                return
+        else:
+            target = args[1]
+            server = await self._find_server(target)
+            if not server:
+                yield event.plain_result(f"❌ 未找到服务器: {target}")
+                return
+
         days = int(args[2]) if len(args) > 2 else 7
-        server = await self._find_server(target)
-        if not server:
-            yield event.plain_result(f"❌ 未找到服务器: {target}")
-            return
+
         records = await self.db.get_ping_records(server.id, limit=1000, since=datetime.now().replace(hour=0, minute=0, second=0))
         if not records:
             yield event.plain_result(f"📊 {server.display_name} 暂无统计数据")
