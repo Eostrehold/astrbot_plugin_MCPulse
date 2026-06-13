@@ -1,0 +1,72 @@
+{
+  "monitor": {
+    "description": "监控设置",
+    "type": "object",
+    "items": {
+      "interval": {
+        "description": "监控间隔(秒)",
+        "type": "int",
+        "default": 300,
+        "hint": "定时检测服务器状态的间隔时间"
+      },
+      "enabled": {
+        "description": "启用监控",
+        "type": "bool",
+        "default": true
+      },
+      "timeout": {
+        "description": "查询超时(秒)",
+        "type": "int",
+        "default": 10
+      }
+    }
+  },
+  "notification": {
+    "description": "通知设置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用通知",
+        "type": "bool",
+        "default": true
+      },
+      "on_offline": {
+        "description": "离线告警",
+        "type": "bool",
+        "default": true
+      },
+      "on_recovery": {
+        "description": "恢复通知",
+        "type": "bool",
+        "default": true
+      },
+      "on_high_latency": {
+        "description": "高延迟告警",
+        "type": "bool",
+        "default": true
+      },
+      "latency_threshold": {
+        "description": "延迟阈值(ms)",
+        "type": "int",
+        "default": 500
+      }
+    }
+  },
+  "data_retention": {
+    "description": "数据保留天数",
+    "type": "int",
+    "default": 30,
+    "hint": "监控数据保留天数，超过自动清理"
+  },
+  "permissions": {
+    "description": "权限设置",
+    "type": "object",
+    "items": {
+      "admin_only": {
+        "description": "仅管理员可管理",
+        "type": "bool",
+        "default": false
+      }
+    }
+  }
+}

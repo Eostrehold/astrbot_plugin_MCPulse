@@ -13,7 +13,8 @@ if _plugin_dir not in sys.path:
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.api import logger, AstrBotConfig
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from config.manager import ConfigManager
 from core.ping import PingService
@@ -26,16 +27,16 @@ from utils.motd_parser import strip_motd_colors
 
 @register(
     "astrbot_plugin_MCPulse",
-    "User",
+    "Eostrehold",
     "Minecraft server status monitoring plugin with notifications, statistics, and charts.",
     "v0.1.0",
 )
 class MCPulsePlugin(Star):
     """MCPulse plugin for monitoring Minecraft servers."""
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.config = ConfigManager(context.get_config())
+        self.config = ConfigManager(config)
         self.ping_service = PingService(timeout=self.config.monitor_timeout)
         self.db: Optional[Database] = None
         self.template_manager = TemplateManager()
@@ -44,7 +45,9 @@ class MCPulsePlugin(Star):
 
     async def initialize(self):
         """Initialize the plugin."""
-        db_path = Path(self.context.get_data_path()) / "mcpulse.db"
+        data_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = data_dir / "mcpulse.db"
         self.db = Database(str(db_path))
         await self.db.initialize()
         logger.info(f"MCPulse database initialized at {db_path}")
@@ -123,7 +126,6 @@ class MCPulsePlugin(Star):
         }
         message = self.template_manager.render(notification_type, variables)
         logger.info(f"Notification [{notification_type}] for {server.address}: {message}")
-        # TODO: Integrate with AstrBot's message sending API for actual delivery
 
     # ---- Helper Methods ----
 
