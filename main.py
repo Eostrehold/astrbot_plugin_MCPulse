@@ -1,9 +1,15 @@
 """MCPulse - Minecraft Server Status Monitoring Plugin for AstrBot."""
 
 import asyncio
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+
+# Add plugin directory to sys.path for local imports
+_plugin_dir = str(Path(__file__).parent)
+if _plugin_dir not in sys.path:
+    sys.path.insert(0, _plugin_dir)
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
