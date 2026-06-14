@@ -22,7 +22,7 @@ from core.models import ServerStatus, ServerInfo
 from storage.database import Database
 from notification.templates import TemplateManager
 from chart.generator import ChartGenerator
-from chart.renderer import render_server_status
+from chart.renderer import render_server_status, render_server_stats, render_server_list
 from utils.motd_parser import strip_motd_colors
 
 PLUGIN_DIR = Path(__file__).parent
@@ -179,14 +179,27 @@ class MCPulsePlugin(Star):
     async def _render_status_image(self, server: ServerInfo, status: ServerStatus) -> str:
         """Render server status as PNG via Pillow and return file path."""
         img_bytes = render_server_status(server, status)
+        return await self._save_image(img_bytes, "status")
 
-        # Save to a temp file in plugin data directory
+    async def _render_stats_image(self, server: ServerInfo, records: List[dict], days: int) -> str:
+        """Render server statistics as PNG."""
+        img_bytes = render_server_stats(server, records, days)
+        return await self._save_image(img_bytes, "stats")
+
+    async def _render_list_image(self, servers: List[ServerInfo],
+                                  latest_records: dict[int, dict],
+                                  default_server: Optional[ServerInfo] = None) -> str:
+        """Render server list as PNG."""
+        img_bytes = render_server_list(servers, latest_records, default_server)
+        return await self._save_image(img_bytes, "list")
+
+    async def _save_image(self, img_bytes: bytes, prefix: str = "img") -> str:
+        """Save image bytes to plugin data directory and return path."""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         data_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name
         data_dir.mkdir(parents=True, exist_ok=True)
-        img_path = data_dir / f"status_{ts}.png"
+        img_path = data_dir / f"{prefix}_{ts}.png"
         img_path.write_bytes(img_bytes)
-
         return str(img_path)
 
     async def _get_default_server(self, event: AstrMessageEvent) -> Optional[ServerInfo]:
@@ -331,15 +344,14 @@ class MCPulsePlugin(Star):
                 version=status.version, error=status.error,
             )
 
-            add_msg = f"✅ 已添加服务器监控\n地址: {host}:{port}\n备注: {name or '无'}\n分组: {group or '默认'}\n\n立即查询结果:"
+            add_msg = f"✅ 已添加服务器监控: {name or host}"
+            yield event.plain_result(add_msg)
             try:
                 image_url = await self._render_status_image(server, status)
-                yield event.plain_result(add_msg)
                 yield event.image_result(image_url)
             except Exception as e:
                 logger.error(f"Failed to render status image: {e}")
-                status_text = self._format_status(name or host, f"{host}:{port}", status)
-                yield event.plain_result(f"{add_msg}\n{status_text}")
+                yield event.plain_result(self._format_status(name or host, f"{host}:{port}", status))
 
         except Exception as e:
             yield event.plain_result(f"❌ 添加失败: {e}")
@@ -369,33 +381,45 @@ class MCPulsePlugin(Star):
         if not servers:
             yield event.plain_result("📋 暂无监控服务器\n使用 /mcadd 添加服务器")
             return
-        lines = ["📋 监控服务器列表", "─────────────────────"]
-        online_count = 0
-        offline_count = 0
+
+        # Build latest_records dict
+        latest_records = {}
         for server in servers:
             records = await self.db.get_ping_records(server.id, limit=1)
             if records:
-                latest = records[0]
-                if latest["online"]:
-                    status_icon = "🟢"
-                    online_count += 1
-                    status_text = f"人数: {latest['players_online']}/{latest['players_max']} | 延迟: {latest['latency']:.0f}ms"
-                else:
-                    status_icon = "🔴"
-                    offline_count += 1
-                    status_text = "状态: 离线"
-            else:
-                status_icon = "⚪"
-                status_text = "未查询"
-            lines.append(f"{status_icon} {server.display_name} - {server.host}\n   分组: {server.group_name or '默认'} | {status_text}")
-        lines.append("─────────────────────")
-        lines.append(f"共 {len(servers)} 台服务器 | {online_count} 台在线 | {offline_count} 台离线")
+                latest_records[server.id] = records[0]
 
         default_server = await self._get_default_server(event)
-        if default_server:
-            lines.append(f"\n📌 当前默认服务器: {default_server.display_name}")
 
-        yield event.plain_result("\n".join(lines))
+        try:
+            image_url = await self._render_list_image(servers, latest_records, default_server)
+            yield event.image_result(image_url)
+        except Exception as e:
+            logger.error(f"Failed to render list image: {e}")
+            # Fallback to text
+            lines = ["📋 监控服务器列表", "─────────────────────"]
+            online_count = 0
+            offline_count = 0
+            for server in servers:
+                rec = latest_records.get(server.id)
+                if rec:
+                    if rec.get("online"):
+                        status_icon = "🟢"
+                        online_count += 1
+                        status_text = f"人数: {rec['players_online']}/{rec['players_max']} | 延迟: {rec['latency']:.0f}ms"
+                    else:
+                        status_icon = "🔴"
+                        offline_count += 1
+                        status_text = "状态: 离线"
+                else:
+                    status_icon = "⚪"
+                    status_text = "未查询"
+                lines.append(f"{status_icon} {server.display_name} - {server.host}\n   分组: {server.group_name or '默认'} | {status_text}")
+            lines.append("─────────────────────")
+            lines.append(f"共 {len(servers)} 台服务器 | {online_count} 台在线 | {offline_count} 台离线")
+            if default_server:
+                lines.append(f"\n📌 当前默认服务器: {default_server.display_name}")
+            yield event.plain_result("\n".join(lines))
 
     @filter.command("mcstats")
     async def cmd_stats(self, event: AstrMessageEvent):
@@ -421,20 +445,27 @@ class MCPulsePlugin(Star):
         if not records:
             yield event.plain_result(f"📊 {server.display_name} 暂无统计数据")
             return
-        latencies = [r["latency"] for r in records if r["latency"] is not None]
-        online_records = [r for r in records if r["online"]]
-        online_rate = (len(online_records) / len(records)) * 100 if records else 0
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0
-        min_latency = min(latencies) if latencies else 0
-        max_latency = max(latencies) if latencies else 0
-        players = [r["players_online"] for r in records if r["players_online"] is not None]
-        max_players = max(players) if players else 0
-        avg_players = sum(players) / len(players) if players else 0
-        response = (
-            f"📊 {server.display_name} - 最近{days}天统计\n"
-            f"─────────────────────\n"
-            f"📶 延迟统计:\n   平均: {avg_latency:.0f}ms | 最低: {min_latency:.0f}ms | 最高: {max_latency:.0f}ms\n"
-            f"\n👥 人数统计:\n   平均: {avg_players:.0f} | 最高: {max_players}\n"
-            f"\n📈 在线率: {online_rate:.1f}%"
-        )
-        yield event.plain_result(response)
+
+        try:
+            image_url = await self._render_stats_image(server, records, days)
+            yield event.image_result(image_url)
+        except Exception as e:
+            logger.error(f"Failed to render stats image: {e}")
+            # Fallback to text
+            latencies = [r["latency"] for r in records if r["latency"] is not None]
+            online_records_count = len([r for r in records if r["online"]])
+            online_rate = (online_records_count / len(records)) * 100 if records else 0
+            avg_latency = sum(latencies) / len(latencies) if latencies else 0
+            min_latency = min(latencies) if latencies else 0
+            max_latency = max(latencies) if latencies else 0
+            players = [r["players_online"] for r in records if r["players_online"] is not None]
+            max_players = max(players) if players else 0
+            avg_players = sum(players) / len(players) if players else 0
+            response = (
+                f"📊 {server.display_name} - 最近{days}天统计\n"
+                f"─────────────────────\n"
+                f"📶 延迟统计:\n   平均: {avg_latency:.0f}ms | 最低: {min_latency:.0f}ms | 最高: {max_latency:.0f}ms\n"
+                f"\n👥 人数统计:\n   平均: {avg_players:.0f} | 最高: {max_players}\n"
+                f"\n📈 在线率: {online_rate:.1f}%"
+            )
+            yield event.plain_result(response)
