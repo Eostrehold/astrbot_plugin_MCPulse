@@ -1,34 +1,41 @@
-"""Server status image renderer using Pillow (local rendering)."""
+"""Server status image renderer using Pillow — premium dark gaming aesthetic."""
 
 import io
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
 from core.models import ServerStatus, ServerInfo
 
-# Color palette
-BG_COLOR = (30, 30, 46)
-CARD_COLOR = (40, 42, 60)
-ACCENT_GREEN = (72, 199, 142)
-ACCENT_RED = (237, 85, 85)
-ACCENT_BLUE = (89, 166, 246)
-TEXT_WHITE = (255, 255, 255)
-TEXT_GRAY = (148, 150, 170)
-TEXT_DIM = (100, 102, 120)
-BORDER_COLOR = (50, 52, 72)
-CARD_WIDTH = 480
-CARD_PADDING = 20
-SECTION_GAP = 12
+# ── Premium Dark Palette ──────────────────────────────────────────────
+BG = (10, 10, 15)          # near-black canvas
+SURFACE = (18, 18, 28)     # card surface
+SURFACE_ALT = (24, 24, 36) # sub-card surface
+BORDER = (38, 38, 52)      # subtle border
+GREEN = (72, 220, 140)     # online / positive
+RED = (240, 90, 90)        # offline / error
+BLUE = (90, 170, 250)      # accent / info
+WHITE = (255, 255, 255)
+TEXT_PRIMARY = (220, 220, 235)
+TEXT_SECONDARY = (130, 130, 155)
+TEXT_MUTED = (80, 80, 105)
+BADGE_ONLINE = (55, 180, 120, 35)  # green tinted
+BADGE_OFFLINE = (200, 70, 70, 35)   # red tinted
+
+CARD_W = 500
+PAD = 24
+GAP = 14
 
 
-def _get_font(size: int = 13, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Try system fonts, fall back to default."""
-    names = ["msyhbd.ttc" if bold else "msyh.ttc",
-             "seguisb.ttf" if bold else "segoeui.ttf",
-             "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"]
-    for name in names:
+def _font(size: int = 13, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """Resolve font with fallbacks."""
+    candidates = [
+        "msyhbd.ttc" if bold else "msyh.ttc",
+        "seguisb.ttf" if bold else "segoeui.ttf",
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+    ]
+    for name in candidates:
         try:
             return ImageFont.truetype(name, size)
         except (IOError, OSError):
@@ -37,14 +44,13 @@ def _get_font(size: int = 13, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> List[str]:
-    """Wrap text to fit max_w pixels."""
+    """Word-wrap text to pixel width."""
     if not text:
         return [""]
-    lines = []
+    lines: List[str] = []
     for para in text.split("\n"):
-        words = para.split()
         cur = ""
-        for w in words:
+        for w in para.split():
             test = (cur + " " + w).strip()
             bb = font.getbbox(test)
             if bb[2] - bb[0] <= max_w:
@@ -56,7 +62,9 @@ def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> List[str]:
         if cur:
             lines.append(cur)
         lines.append("")
-    return lines
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines or [""]
 
 
 def _fmt_players(players: List[str], limit: int = 8) -> str:
@@ -64,117 +72,135 @@ def _fmt_players(players: List[str], limit: int = 8) -> str:
         return ""
     if len(players) <= limit:
         return ", ".join(players)
-    return ", ".join(players[:limit]) + f" ... (+{len(players) - limit})"
+    return ", ".join(players[:limit]) + f" … +{len(players) - limit}"
 
 
 def render_server_status(server: ServerInfo, status: ServerStatus) -> bytes:
-    """Render server status as a PNG image bytes."""
-    motd = status.motd if status.motd else ""
-    m_lines = len(_wrap(motd, _get_font(12), CARD_WIDTH - CARD_PADDING * 2 - 20))
+    """Render a premium server-status card as PNG bytes.
+
+    Design language — dark gaming / dev-tool inspired:
+    • near-black canvas with lifted card surface
+    • fine 1 px borders instead of heavy shadows
+    • asymmetrical stats grid (left label, right value)
+    • mono-style section labels, generous whitespace
+    • soft accent badge for online/offline
+    """
+    motd = status.motd or ""
+    m_lines = len(_wrap(motd, _font(12), CARD_W - PAD * 2 - 20))
     ps = _fmt_players(status.players_sample)
-    p_lines = len(_wrap(ps, _get_font(12), CARD_WIDTH - CARD_PADDING * 2 - 20)) if ps else 0
+    p_lines = len(_wrap(ps, _font(12), CARD_W - PAD * 2 - 20)) if ps else 0
 
-    hh = 60
-    gh = 90 if status.online else 40
-    mh = m_lines * 18 + 30 if motd and status.online else 0
-    ph = p_lines * 18 + 30 if ps and status.online else 0
+    # Height computation
+    HEADER_H = 64
+    STATS_H = 72 if status.online else 44
+    MOTD_H = m_lines * 20 + 34 if motd and status.online else 0
+    PLAYER_H = p_lines * 20 + 34 if ps and status.online else 0
 
-    ch = CARD_PADDING + hh + SECTION_GAP + gh + 12 + 30 + CARD_PADDING
-    if mh:
-        ch += mh + SECTION_GAP
-    if ph:
-        ch += ph + SECTION_GAP
+    H = (PAD + HEADER_H + GAP + STATS_H +
+         (MOTD_H + GAP if MOTD_H else 0) +
+         (PLAYER_H + GAP if PLAYER_H else 0) +
+         12 + 32 + PAD)
 
-    img = Image.new("RGB", (CARD_WIDTH, ch), BG_COLOR)
+    img = Image.new("RGB", (CARD_W, H), BG)
     draw = ImageDraw.Draw(img)
 
-    ft_title = _get_font(16, bold=True)
-    ft_sub = _get_font(11)
-    ft_body = _get_font(12)
-    ft_sm = _get_font(10)
-    ft_big = _get_font(18, bold=True)
-    ft_val = _get_font(16, bold=True)
+    # Fonts
+    f_display = _font(18, bold=True)
+    f_title = _font(15, bold=True)
+    f_body = _font(12)
+    f_sm = _font(10)
+    f_val = _font(17, bold=True)
+    f_label = _font(9)
 
-    y = CARD_PADDING
-    r = 10
-    draw.rounded_rectangle((CARD_PADDING, y, CARD_WIDTH - CARD_PADDING, y + hh), r, CARD_COLOR)
+    y = PAD
 
-    # Icon
-    ic = ACCENT_GREEN if status.online else ACCENT_RED
-    draw.ellipse((CARD_PADDING + 12, y + 10, CARD_PADDING + 50, y + 50), fill=ic)
-    draw.text((CARD_PADDING + 21, y + 17), server.display_name[0].upper(), TEXT_WHITE, ft_big)
+    # ── Header ──────────────────────────────────────────────────────
+    draw.rounded_rectangle((PAD, y, CARD_W - PAD, y + HEADER_H), 12, SURFACE)
+    draw.rounded_rectangle((PAD, y, CARD_W - PAD, y + HEADER_H), 12, None, BORDER, 1)
 
-    draw.text((CARD_PADDING + 62, y + 10), server.display_name, TEXT_WHITE, ft_title)
-    draw.text((CARD_PADDING + 62, y + 34), server.address, TEXT_GRAY, ft_sub)
+    # Icon circle
+    ic = GREEN if status.online else RED
+    ix, iy = PAD + 14, y + 10
+    draw.ellipse((ix, iy, ix + 44, iy + 44), fill=ic)
 
-    # Badge
-    bt = "● ONLINE" if status.online else "● OFFLINE"
-    bc = ACCENT_GREEN if status.online else ACCENT_RED
-    bb = draw.textbbox((0, 0), bt, ft_sub)
-    bw = bb[2] - bb[0] + 16
-    bh = bb[3] - bb[1] + 6
-    bx = CARD_WIDTH - CARD_PADDING - bw - 10
-    by2 = y + 12
-    draw.rounded_rectangle((bx, by2, bx + bw, by2 + bh), 12, (*bc, 40))
-    draw.text((bx + 8, by2 + 2), bt, bc, ft_sub)
+    # Server name
+    draw.text((PAD + 72, y + 8), server.display_name, WHITE, f_display)
+    draw.text((PAD + 72, y + 36), server.address, TEXT_SECONDARY, f_body)
 
-    y += hh + SECTION_GAP
-    gw = (CARD_WIDTH - CARD_PADDING * 2 - 8) // 2
+    # Status badge
+    badge_t = "ONLINE" if status.online else "OFFLINE"
+    badge_bg = BADGE_ONLINE if status.online else BADGE_OFFLINE
+    bb = draw.textbbox((0, 0), badge_t, f_sm)
+    bw, bh = bb[2] - bb[0] + 20, bb[3] - bb[1] + 8
+    bx, by_ = CARD_W - PAD - bw - 6, y + 14
+    draw.rounded_rectangle((bx, by_, bx + bw, by_ + bh), 10, badge_bg)
+    draw.text((bx + 10, by_ + 3), badge_t, GREEN if status.online else RED, f_sm)
 
+    y += HEADER_H + GAP
+
+    # ── Stats Row ───────────────────────────────────────────────────
     if status.online:
-        cards = [
-            (CARD_PADDING, y, "PLAYERS", f"{status.players_online:,} / {status.players_max:,}", ACCENT_GREEN),
-            (CARD_PADDING + gw + 8, y, "LATENCY", f"{status.latency:.0f}ms", ACCENT_BLUE),
-        ]
-        for cx, cy2, cl, cv, cc in cards:
-            draw.rounded_rectangle((cx, cy2, cx + gw, cy2 + 36), 8, (50, 52, 72))
-            draw.text((cx + 10, cy2 + 6), cl, TEXT_GRAY, ft_sm)
-            draw.text((cx + 10, cy2 + 18), cv, cc, ft_val)
-        y += 42
+        row_w = CARD_W - PAD * 2
+        col_w = (row_w - 10) // 2
 
-        cards = [
-            (CARD_PADDING, y, "VERSION", status.version or "?", TEXT_WHITE),
-            (CARD_PADDING + gw + 8, y, "PROTOCOL", str(status.protocol or "?"), TEXT_GRAY),
+        items = [
+            ("PLAYERS", f"{status.players_online:,} / {status.players_max:,}", GREEN),
+            ("LATENCY", f"{status.latency:.0f} ms", BLUE),
         ]
-        for cx, cy2, cl, cv, cc in cards:
-            draw.rounded_rectangle((cx, cy2, cx + gw, cy2 + 36), 8, (50, 52, 72))
-            draw.text((cx + 10, cy2 + 6), cl, TEXT_GRAY, ft_sm)
-            draw.text((cx + 10, cy2 + 18), cv, cc, ft_val)
-        y += 48
+        for i, (label, val, accent) in enumerate(items):
+            cx = PAD + i * (col_w + 10)
+            draw.rounded_rectangle((cx, y, cx + col_w, y + 36), 8, SURFACE_ALT)
+            draw.text((cx + 12, y + 4), label, TEXT_MUTED, f_label)
+            draw.text((cx + 12, y + 16), val, accent, f_val)
+
+        y += 40
+
+        items2 = [
+            ("VERSION", status.version or "?", TEXT_SECONDARY),
+            ("PROTOCOL", str(status.protocol or "?"), TEXT_SECONDARY),
+        ]
+        for i, (label, val, accent) in enumerate(items2):
+            cx = PAD + i * (col_w + 10)
+            draw.rounded_rectangle((cx, y, cx + col_w, y + 30), 8, SURFACE_ALT)
+            draw.text((cx + 12, y + 3), label, TEXT_MUTED, f_label)
+            draw.text((cx + 12, y + 15), val, accent, f_body)
+        y += 34
     else:
-        rw = CARD_WIDTH - CARD_PADDING * 2
-        draw.rounded_rectangle((CARD_PADDING, y, CARD_PADDING + rw, y + 36), 8, (60, 40, 40))
-        draw.text((CARD_PADDING + 12, y + 8), f"Error: {status.error or 'Unknown'}", ACCENT_RED, ft_body)
-        y += 48
+        draw.rounded_rectangle((PAD, y, CARD_W - PAD, y + 40), 8, (30, 18, 18))
+        draw.text((PAD + 14, y + 11), f"⛔  {status.error or 'Unknown'}", RED, f_body)
+        y += 44
 
-    # MOTD
+    # ── MOTD ─────────────────────────────────────────────────────────
     if status.online and motd:
-        rw = CARD_WIDTH - CARD_PADDING * 2
-        draw.rounded_rectangle((CARD_PADDING, y, CARD_PADDING + rw, y + m_lines * 18 + 30), 8, CARD_COLOR)
-        draw.text((CARD_PADDING + 12, y + 8), "MOTD", TEXT_GRAY, ft_sm)
-        ly = y + 24
-        for line in _wrap(motd, ft_body, CARD_WIDTH - CARD_PADDING * 2 - 24):
-            draw.text((CARD_PADDING + 12, ly), line, TEXT_WHITE, ft_body)
-            ly += 18
-        y += m_lines * 18 + 36
+        box_h = m_lines * 20 + 34
+        draw.rounded_rectangle((PAD, y, CARD_W - PAD, y + box_h), 8, SURFACE)
+        draw.text((PAD + 14, y + 10), "MOTD", TEXT_MUTED, f_label)
+        ly = y + 27
+        for line in _wrap(motd, f_body, CARD_W - PAD * 2 - 28):
+            draw.text((PAD + 14, ly), line, TEXT_PRIMARY, f_body)
+            ly += 20
+        y += box_h + GAP
 
-    # Players
+    # ── Online Players ──────────────────────────────────────────────
     if status.online and ps:
-        rw = CARD_WIDTH - CARD_PADDING * 2
-        draw.rounded_rectangle((CARD_PADDING, y, CARD_PADDING + rw, y + p_lines * 18 + 30), 8, CARD_COLOR)
-        draw.text((CARD_PADDING + 12, y + 8), "ONLINE PLAYERS", TEXT_GRAY, ft_sm)
-        ly = y + 24
-        for line in _wrap(ps, ft_body, CARD_WIDTH - CARD_PADDING * 2 - 24):
-            draw.text((CARD_PADDING + 12, ly), line, ACCENT_BLUE, ft_body)
-            ly += 18
-        y += p_lines * 18 + 36
+        box_h = p_lines * 20 + 34
+        draw.rounded_rectangle((PAD, y, CARD_W - PAD, y + box_h), 8, SURFACE)
+        draw.text((PAD + 14, y + 10), "ONLINE PLAYERS", TEXT_MUTED, f_label)
+        ly = y + 27
+        for line in _wrap(ps, f_body, CARD_W - PAD * 2 - 28):
+            draw.text((PAD + 14, ly), line, BLUE, f_body)
+            ly += 20
+        y += box_h + GAP
 
-    y += 4
-    draw.line((CARD_PADDING, y, CARD_WIDTH - CARD_PADDING, y), BORDER_COLOR, 1)
-    y += 8
-    draw.text((CARD_PADDING, y),
-              f"MCPulse  .  {status.queried_at.strftime('%Y-%m-%d %H:%M:%S')}",
-              TEXT_DIM, ft_sm)
+    # ── Footer ──────────────────────────────────────────────────────
+    y += 2
+    draw.line((PAD, y, CARD_W - PAD, y), BORDER, 1)
+    y += 10
+    draw.text(
+        (PAD, y),
+        f"MCPulse  ·  {status.queried_at.strftime('%Y-%m-%d %H:%M:%S')}",
+        TEXT_MUTED, f_sm,
+    )
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

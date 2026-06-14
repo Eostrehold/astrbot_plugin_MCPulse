@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 # Add plugin directory to sys.path for local imports
@@ -416,7 +416,8 @@ class MCPulsePlugin(Star):
 
         days = int(args[2]) if len(args) > 2 else 7
 
-        records = await self.db.get_ping_records(server.id, limit=1000, since=datetime.now().replace(hour=0, minute=0, second=0))
+        since = datetime.now() - timedelta(days=days) if days else None
+        records = await self.db.get_ping_records(server.id, limit=1000, since=since)
         if not records:
             yield event.plain_result(f"📊 {server.display_name} 暂无统计数据")
             return
