@@ -48,7 +48,7 @@ class ImageRenderer:
             "initial": server.display_name[0].upper(),
             "server_name": server.display_name,
             "server_address": server.address,
-            "status_text": "ONLINE" if online else "OFFLINE",
+            "status_text": "在线" if online else "离线",
             "online": online,
             "players_online": f"{status.players_online:,}",
             "players_max": f"{status.players_max:,}",
@@ -101,7 +101,7 @@ class ImageRenderer:
             if online:
                 online_count += 1
             sc = "online" if online else "offline"
-            st = "ONLINE" if online else "OFFLINE"
+            st = "在线" if online else "离线"
             meta = ""
             if online:
                 pl = rec.get("players_online", "?")
