@@ -22,7 +22,7 @@ from core.models import ServerStatus, ServerInfo
 from storage.database import Database
 from notification.templates import TemplateManager
 from chart.generator import ChartGenerator
-from chart.renderer import render_server_status, render_server_stats, render_server_list
+from chart.renderer import ImageRenderer
 from utils.motd_parser import strip_motd_colors
 
 PLUGIN_DIR = Path(__file__).parent
@@ -46,11 +46,15 @@ class MCPulsePlugin(Star):
         self.chart_generator = ChartGenerator()
         self._monitor_task: Optional[asyncio.Task] = None
         self._img_dir: Optional[Path] = None
+        self.img: Optional[ImageRenderer] = None
 
     async def initialize(self):
         """Initialize the plugin."""
         data_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name
         data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.img = ImageRenderer(self.html_render, PLUGIN_DIR / "templates")
+
         db_path = data_dir / "mcpulse.db"
         self.db = Database(str(db_path))
         await self.db.initialize()
@@ -177,30 +181,15 @@ class MCPulsePlugin(Star):
         )
 
     async def _render_status_image(self, server: ServerInfo, status: ServerStatus) -> str:
-        """Render server status as PNG via Pillow and return file path."""
-        img_bytes = render_server_status(server, status)
-        return await self._save_image(img_bytes, "status")
+        return await self.img.render_status(server, status)
 
     async def _render_stats_image(self, server: ServerInfo, records: List[dict], days: int) -> str:
-        """Render server statistics as PNG."""
-        img_bytes = render_server_stats(server, records, days)
-        return await self._save_image(img_bytes, "stats")
+        return await self.img.render_stats(server, records, days)
 
     async def _render_list_image(self, servers: List[ServerInfo],
                                   latest_records: dict[int, dict],
                                   default_server: Optional[ServerInfo] = None) -> str:
-        """Render server list as PNG."""
-        img_bytes = render_server_list(servers, latest_records, default_server)
-        return await self._save_image(img_bytes, "list")
-
-    async def _save_image(self, img_bytes: bytes, prefix: str = "img") -> str:
-        """Save image bytes to plugin data directory and return path."""
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        data_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name
-        data_dir.mkdir(parents=True, exist_ok=True)
-        img_path = data_dir / f"{prefix}_{ts}.png"
-        img_path.write_bytes(img_bytes)
-        return str(img_path)
+        return await self.img.render_list(servers, latest_records, default_server)
 
     async def _get_default_server(self, event: AstrMessageEvent) -> Optional[ServerInfo]:
         """Get the default server for the current group/user."""
